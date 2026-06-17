@@ -36,6 +36,7 @@ const char* FormatPlotValue( double val, PlotValueFormatting format );
 std::vector<std::string> SplitLines( const char* data, size_t sz );
 
 void PrintLocalStack( const CallstackFrameData* frame, const Worker& worker, const View& view );
+bool OpenProfilerInNewWindow( const char* tracePath );
 
 }
 

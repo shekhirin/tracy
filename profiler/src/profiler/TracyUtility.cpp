@@ -1,4 +1,22 @@
 #include <assert.h>
+#include <string.h>
+
+#ifndef __EMSCRIPTEN__
+#  ifdef _WIN32
+#    ifndef NOMINMAX
+#      define NOMINMAX
+#    endif
+#    include <windows.h>
+#  else
+#    include <limits.h>
+#    include <stdlib.h>
+#    include <unistd.h>
+#    include <sys/types.h>
+#    ifdef __APPLE__
+#      include <mach-o/dyld.h>
+#    endif
+#  endif
+#endif
 
 #include "TracyColor.hpp"
 #include "TracyPrint.hpp"
@@ -9,6 +27,127 @@
 
 namespace tracy
 {
+
+#ifndef __EMSCRIPTEN__
+#ifdef _WIN32
+
+static std::wstring Utf8ToWide( const char* str )
+{
+    const auto len = MultiByteToWideChar( CP_UTF8, 0, str, -1, nullptr, 0 );
+    if( len == 0 ) return {};
+    std::wstring ret( len, L'\0' );
+    MultiByteToWideChar( CP_UTF8, 0, str, -1, &ret[0], len );
+    ret.resize( len - 1 );
+    return ret;
+}
+
+static void AppendQuotedCommandArg( std::wstring& cmd, const std::wstring& arg )
+{
+    cmd.push_back( L'"' );
+    size_t backslashes = 0;
+    for( const auto c : arg )
+    {
+        if( c == L'\\' )
+        {
+            backslashes++;
+        }
+        else if( c == L'"' )
+        {
+            cmd.append( backslashes * 2 + 1, L'\\' );
+            cmd.push_back( c );
+            backslashes = 0;
+        }
+        else
+        {
+            cmd.append( backslashes, L'\\' );
+            cmd.push_back( c );
+            backslashes = 0;
+        }
+    }
+    cmd.append( backslashes * 2, L'\\' );
+    cmd.push_back( L'"' );
+}
+
+#else
+
+static std::string GetExecutablePath()
+{
+#ifdef __APPLE__
+    uint32_t sz = PATH_MAX;
+    std::vector<char> path( sz );
+    if( _NSGetExecutablePath( path.data(), &sz ) != 0 )
+    {
+        path.resize( sz );
+        if( _NSGetExecutablePath( path.data(), &sz ) != 0 ) return {};
+    }
+
+    char resolved[PATH_MAX];
+    if( realpath( path.data(), resolved ) ) return resolved;
+    return path.data();
+#else
+    char path[PATH_MAX];
+    const auto sz = readlink( "/proc/self/exe", path, sizeof( path ) - 1 );
+    if( sz <= 0 ) return {};
+    path[sz] = '\0';
+    return path;
+#endif
+}
+
+#endif
+#endif
+
+bool OpenProfilerInNewWindow( const char* tracePath )
+{
+#ifdef __EMSCRIPTEN__
+    return false;
+#elif defined( _WIN32 )
+    std::vector<wchar_t> exeBuf( MAX_PATH );
+    for(;;)
+    {
+        const auto sz = GetModuleFileNameW( nullptr, exeBuf.data(), uint32_t( exeBuf.size() ) );
+        if( sz == 0 ) return false;
+        if( sz < exeBuf.size() - 1 )
+        {
+            exeBuf.resize( sz );
+            break;
+        }
+        exeBuf.resize( exeBuf.size() * 2 );
+    }
+
+    const std::wstring exe( exeBuf.begin(), exeBuf.end() );
+    const auto trace = Utf8ToWide( tracePath );
+    if( trace.empty() ) return false;
+
+    std::wstring cmd;
+    AppendQuotedCommandArg( cmd, exe );
+    cmd.push_back( L' ' );
+    AppendQuotedCommandArg( cmd, trace );
+
+    STARTUPINFOW si = {};
+    si.cb = sizeof( si );
+    PROCESS_INFORMATION pi = {};
+    const auto ok = CreateProcessW( exe.c_str(), &cmd[0], nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi );
+    if( ok )
+    {
+        CloseHandle( pi.hThread );
+        CloseHandle( pi.hProcess );
+    }
+    return ok != 0;
+#else
+    const auto exe = GetExecutablePath();
+    if( exe.empty() ) return false;
+
+    const auto pid = fork();
+    if( pid < 0 ) return false;
+    if( pid == 0 )
+    {
+        setsid();
+        execl( exe.c_str(), exe.c_str(), tracePath, static_cast<char*>( nullptr ) );
+        _exit( 127 );
+    }
+    return true;
+#endif
+}
 
 // Short list based on GetTypes() in TracySourceTokenizer.cpp
 constexpr const char* TypesList[] = {

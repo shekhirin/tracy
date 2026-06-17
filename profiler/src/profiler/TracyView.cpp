@@ -14,12 +14,14 @@
 
 #include "TracyConfig.hpp"
 #include "TracyFileRead.hpp"
+#include "TracyFileselector.hpp"
 #include "TracyFilesystem.hpp"
 #include "TracyImGui.hpp"
 #include "TracyManualData.hpp"
 #include "TracyPrint.hpp"
 #include "TracySourceView.hpp"
 #include "TracyTexture.hpp"
+#include "TracyUtility.hpp"
 #include "TracyView.hpp"
 #include "../server/TracySysUtil.hpp"
 #include "../public/common/TracyStackFrames.hpp"
@@ -924,6 +926,21 @@ bool View::DrawImpl()
     }
     ImGui::SameLine();
     ToggleButton( ICON_FA_GEAR, m_showOptions );
+#ifndef __EMSCRIPTEN__
+    ImGui::SameLine();
+    if( ImGui::Button( ICON_FA_FOLDER_OPEN ) )
+    {
+        Fileselector::OpenFile( "tracy", "Tracy Profiler trace file", [this]( const char* fn ) {
+            if( !OpenProfilerInNewWindow( fn ) )
+            {
+                m_notificationTime = 4;
+                m_notificationText = "Could not open trace in a new window.";
+                m_acb();
+            }
+        } );
+    }
+    TooltipIfHovered( "Open saved trace in new window" );
+#endif
     ImGui::SameLine();
     ToggleButton( ICON_FA_COMMENT " Messages", m_showMessages );
     ImGui::SameLine();
