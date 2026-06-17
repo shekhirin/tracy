@@ -1465,6 +1465,7 @@ Worker::Worker( FileRead& f, EventType::Type eventMask, bool bgTasks, bool allow
     s_loadProgress.progress.store( LoadProgress::ContextSwitches, std::memory_order_relaxed );
 
     const bool ctxSwitchesHaveWakeupCpu = fileVer >= FileVersion( 0, 11, 3 );
+    const bool ctxSwitchesHaveWakeupValid = fileVer >= FileVersion( 0, 13, 4 );
     if( eventMask & EventType::ContextSwitches )
     {
         f.Read( sz );
@@ -1483,7 +1484,7 @@ Worker::Worker( FileRead& f, EventType::Type eventMask, bool bgTasks, bool allow
             for( uint64_t j=0; j<csz; j++ )
             {
                 int64_t deltaWakeup, deltaStart, diff, thread;
-                uint8_t cpu, wakeupcpu;
+                uint8_t cpu, wakeupcpu, flags;
                 int8_t reason, state;
                 f.Read7( deltaWakeup, deltaStart, diff, cpu, reason, state, thread );
                 if ( ctxSwitchesHaveWakeupCpu )
@@ -1493,6 +1494,14 @@ Worker::Worker( FileRead& f, EventType::Type eventMask, bool bgTasks, bool allow
                 else
                 {
                     wakeupcpu = cpu;
+                }
+                if( ctxSwitchesHaveWakeupValid )
+                {
+                    f.Read( flags );
+                }
+                else
+                {
+                    flags = 0;
                 }
                 refTime += deltaWakeup;
                 ptr->SetWakeup( refTime );
@@ -1506,6 +1515,7 @@ Worker::Worker( FileRead& f, EventType::Type eventMask, bool bgTasks, bool allow
                 ptr->SetReason( reason );
                 ptr->SetState( state );
                 ptr->SetThread( CompressThread( thread ) );
+                ptr->SetWakeupValid( ctxSwitchesHaveWakeupValid ? ( flags & 0x01 ) != 0 : ptr->WakeupVal() != ptr->Start() );
                 ptr++;
             }
             data->runningTime = runningTime;
@@ -7073,6 +7083,7 @@ void Worker::ProcessContextSwitch( const QueueContextSwitch& ev )
             item = &data.push_next();
             item->SetWakeup( time );
             item->SetWakeupCpu( ev.cpu );
+            item->SetWakeupValid( false );
 
             if ( it->second->pendingWakeUp.time != 0 )
             {
@@ -7087,6 +7098,7 @@ void Worker::ProcessContextSwitch( const QueueContextSwitch& ev )
                     {
                         item->SetWakeup( wakeupTime );
                         item->SetWakeupCpu( it->second->pendingWakeUp.cpu );
+                        item->SetWakeupValid( true );
                         it->second->pendingWakeUp.time = 0;
                     }
                 }
@@ -7130,7 +7142,16 @@ void Worker::ProcessThreadWakeup( const QueueThreadWakeup& ev )
         it = m_data.ctxSwitch.emplace( ev.thread, ctx ).first;
     }
     auto& data = it->second->v;
-    if( !data.empty() && !data.back().IsEndValid() )
+    if( !data.empty() && data.back().Reason() == ContextSwitchData::Wakeup && !data.back().IsEndValid() )
+    {
+        auto& item = data.back();
+        item.SetWakeupCpu( ev.cpu );
+        item.SetWakeup( time );
+        item.SetStart( time );
+        item.SetWakeupValid( true );
+        return;
+    }
+    else if( !data.empty() && !data.back().IsEndValid() )
     {
         // We received the wakeup before thread switches out. This can actually happen!
         // So instead of dropping the information, keep the last one around so that we
@@ -7147,6 +7168,7 @@ void Worker::ProcessThreadWakeup( const QueueThreadWakeup& ev )
         item.SetWakeupCpu( ev.cpu );
         item.SetWakeup( time );
         item.SetStart( time );
+        item.SetWakeupValid( true );
         item.SetEnd( -1 );
         item.SetCpu( 0 );
         item.SetReason( ContextSwitchData::Wakeup );
@@ -7305,6 +7327,7 @@ void Worker::ProcessFiberEnter( const QueueFiberEnter& ev )
     item.SetCpu( 0 );
     item.SetWakeup( t );
     item.SetWakeupCpu( 0 );
+    item.SetWakeupValid( true );
     item.SetEnd( -1 );
     item.SetReason( ContextSwitchData::Fiber );
     item.SetState( -1 );
@@ -8590,6 +8613,7 @@ void Worker::Write( FileWrite& f, bool fiDict )
             WriteTimeOffset( f, refTime, cs.End() );
             uint8_t cpu = cs.Cpu();
             uint8_t wakeupcpu = cs.WakeupCpu();
+            uint8_t flags = cs.IsWakeupValid() ? 0x01 : 0;
             int8_t reason = cs.Reason();
             int8_t state = cs.State();
             uint64_t thread = DecompressThread( cs.Thread() );
@@ -8598,6 +8622,7 @@ void Worker::Write( FileWrite& f, bool fiDict )
             f.Write( &state, sizeof( state ) );
             f.Write( &thread, sizeof( thread ) );
             f.Write( &wakeupcpu, sizeof( wakeupcpu ) );
+            f.Write( &flags, sizeof( flags ) );
         }
     }
 

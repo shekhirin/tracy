@@ -194,16 +194,18 @@ void View::DrawContextSwitchList( const TimelineContext& ctx, const std::vector<
         {
             const auto& prev = *(it-1);
             const bool migration = prev.Cpu() != ev.Cpu();
+            const bool wakeupValid = ev.IsWakeupValid();
+            const auto wakeupTime = wakeupValid ? ev.WakeupVal() : ev.Start();
             const auto px0 = std::max( { ( prev.End() - vStart ) * pxns, -10.0, double( minpx ) } );
-            const auto pxw = ( ev.WakeupVal() - vStart ) * pxns;
+            const auto pxw = ( wakeupTime - vStart ) * pxns;
             const auto px1 = std::min( ( ev.Start() - vStart ) * pxns, w + 10.0 );
-            const auto color = migration ? 0xFFEE7711 : 0xFF2222AA;
+            const auto color = !wakeupValid ? 0xFF777777 : ( migration ? 0xFFEE7711 : 0xFF2222AA );
             if( m_vd.darkenContextSwitches )
             {
                 draw->AddRectFilled( dpos + ImVec2( px0, offset + ty05 ), dpos + ImVec2( px1, endOffset ), 0x661C2321 );
             }
             DrawLine( draw, dpos + ImVec2( px0, offset + ty05 - 0.5f ), dpos + ImVec2( std::min( pxw, w+10.0 ), offset + ty05 - 0.5f ), color, lineSize );
-            if( ev.WakeupVal() != ev.Start() )
+            if( wakeupValid && ev.WakeupVal() != ev.Start() )
             {
                 DrawLine( draw, dpos + ImVec2( std::max( pxw, 10.0 ), offset + ty05 - 0.5f ), dpos + ImVec2( px1, offset + ty05 - 0.5f ), 0xFF2280A0, lineSize );
             }
@@ -221,8 +223,16 @@ void View::DrawContextSwitchList( const TimelineContext& ctx, const std::vector<
                     }
                     else
                     {
-                        TextFocused( "Thread is", migration ? "migrating CPUs" : "waiting" );
-                        TextFocused( "Waiting time:", TimeToString( ev.WakeupVal() - prev.End() ) );
+                        TextFocused( "Thread is", wakeupValid ? ( migration ? "migrating CPUs" : "waiting" ) : "off CPU" );
+                        if( wakeupValid )
+                        {
+                            TextFocused( "Blocked time:", TimeToString( ev.WakeupVal() - prev.End() ) );
+                        }
+                        else
+                        {
+                            TextFocused( "Off-CPU time:", TimeToString( ev.Start() - prev.End() ) );
+                            TextDisabledUnformatted( "Wakeup event missing; blocked/run-queue split unknown." );
+                        }
                         if( migration )
                         {
                             TextFocused( "CPU:", RealToString( prev.Cpu() ) );
@@ -235,14 +245,14 @@ void View::DrawContextSwitchList( const TimelineContext& ctx, const std::vector<
                         }
                         if( prev.Reason() != 100 )
                         {
-                            TextFocused( "Wait reason:", DecodeContextSwitchReasonCode( prev.Reason() ) );
+                            TextFocused( wakeupValid ? "Wait reason:" : "Switch-out reason:", DecodeContextSwitchReasonCode( prev.Reason() ) );
                             ImGui::SameLine();
                             ImGui::PushFont( g_fonts.normal, FontSmall );
                             ImGui::AlignTextToFramePadding();
                             TextDisabledUnformatted( DecodeContextSwitchReason( prev.Reason() ) );
                             ImGui::PopFont();
                         }
-                        TextFocused( "Wait state:", DecodeContextSwitchStateCode( prev.State() ) );
+                        TextFocused( wakeupValid ? "Wait state:" : "Switch-out state:", DecodeContextSwitchStateCode( prev.State() ) );
                         ImGui::SameLine();
                         ImGui::PushFont( g_fonts.normal, FontSmall );
                         ImGui::AlignTextToFramePadding();
@@ -253,19 +263,19 @@ void View::DrawContextSwitchList( const TimelineContext& ctx, const std::vector<
 
                     if( IsMouseClicked( 2 ) )
                     {
-                        ZoomToRange( prev.End(), ev.WakeupVal() );
+                        ZoomToRange( prev.End(), wakeupTime );
                     }
                 }
-                else if( ev.WakeupVal() != ev.Start() && ImGui::IsMouseHoveringRect( wpos + ImVec2( pxw, offset ), wpos + ImVec2( px1, offset + ty ) ) )
+                else if( wakeupValid && ev.WakeupVal() != ev.Start() && ImGui::IsMouseHoveringRect( wpos + ImVec2( pxw, offset ), wpos + ImVec2( px1, offset + ty ) ) )
                 {
                     assert( !isFiber );
                     ImGui::BeginTooltip();
-                    TextFocused( "Thread is", "waking up" );
-                    TextFocused( "Scheduling delay:", TimeToString( ev.Start() - ev.WakeupVal() ) );
+                    TextFocused( "Thread is", "ready" );
+                    TextFocused( "Run queue delay:", TimeToString( ev.Start() - ev.WakeupVal() ) );
                     TextFocused( "CPU:", RealToString( ev.Cpu() ) );
                     if( IsMouseClicked( 2 ) )
                     {
-                        ZoomToRange( prev.End(), ev.WakeupVal() );
+                        ZoomToRange( ev.WakeupVal(), ev.Start() );
                     }
                     TextFocused( "Readied by CPU:", RealToString( ev.WakeupCpu() ) );
                     tooltip = true;

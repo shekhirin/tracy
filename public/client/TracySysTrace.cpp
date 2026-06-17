@@ -387,6 +387,7 @@ void SysTraceGetExternalName( uint64_t thread, const char*& threadName, const ch
 #    include <unistd.h>
 #    include <atomic>
 #    include <thread>
+#    include <vector>
 #    include <linux/perf_event.h>
 #    include <linux/version.h>
 #    include <sys/mman.h>
@@ -653,11 +654,15 @@ bool SysTraceStart( int64_t& samplingPeriod )
     }
     TracyDebug( "tracefs path: %s", traceFsPath );
 
-    int switchId = -1, wakingId = -1, vsyncId = -1;
+    int switchId = -1, wakingId = -1, wakeupId = -1, wakeupNewId = -1, vsyncId = -1;
     const auto switchIdStr = ReadFile( traceFsPath, "/events/sched/sched_switch/id" );
     if( switchIdStr ) switchId = atoi( switchIdStr );
     const auto wakingIdStr = ReadFile( traceFsPath, "/events/sched/sched_waking/id" );
     if( wakingIdStr ) wakingId = atoi( wakingIdStr );
+    const auto wakeupIdStr = ReadFile( traceFsPath, "/events/sched/sched_wakeup/id" );
+    if( wakeupIdStr ) wakeupId = atoi( wakeupIdStr );
+    const auto wakeupNewIdStr = ReadFile( traceFsPath, "/events/sched/sched_wakeup_new/id" );
+    if( wakeupNewIdStr ) wakeupNewId = atoi( wakeupNewIdStr );
     const auto vsyncIdStr = ReadFile( traceFsPath, "/events/drm/drm_vblank_event/id" );
     if( vsyncIdStr ) vsyncId = atoi( vsyncIdStr );
 
@@ -665,6 +670,8 @@ bool SysTraceStart( int64_t& samplingPeriod )
 
     TracyDebug( "sched_switch id: %i", switchId );
     TracyDebug( "sched_waking id: %i", wakingId );
+    TracyDebug( "sched_wakeup id: %i", wakeupId );
+    TracyDebug( "sched_wakeup_new id: %i", wakeupNewId );
     TracyDebug( "drm_vblank_event id: %i", vsyncId );
 
     bool useMonotonicClockRaw = !HardwareSupportsInvariantTSC();
@@ -770,7 +777,7 @@ bool SysTraceStart( int64_t& samplingPeriod )
         2 +     // cache reference + miss
         2       // branch retired + miss
     ) + s_numCpus * (
-        2 +     // context switches + waking ups
+        3 +     // context switches + wakeup + wakeup_new
         1       // vsync
     );
     s_ring = (RingBuffer*)tracy_malloc( sizeof( RingBuffer ) * maxNumBuffers );
@@ -1019,18 +1026,20 @@ bool SysTraceStart( int64_t& samplingPeriod )
             }
         }
 
-        if( wakingId != -1 )
+        auto setupWakeupCapture = [&] ( int id, const char* name )
         {
+            if( id == -1 ) return;
+
             pe = {};
             pe.type = PERF_TYPE_TRACEPOINT;
             pe.size = sizeof( perf_event_attr );
             pe.sample_period = 1;
             pe.sample_type = PERF_SAMPLE_TIME | PERF_SAMPLE_RAW;
-            // Coult ask for callstack here
+            // Could ask for callstack here
             //pe.sample_type |= PERF_SAMPLE_CALLCHAIN;
             pe.disabled = 1;
             pe.inherit = 1;
-            pe.config = wakingId;
+            pe.config = id;
             pe.read_format = 0;
             if( useMonotonicClockRaw )
             {
@@ -1038,7 +1047,7 @@ bool SysTraceStart( int64_t& samplingPeriod )
                 pe.clockid = CLOCK_MONOTONIC_RAW;
             }
 
-            TracyDebug( "Setup waking up capture" );
+            TracyDebug( "Setup %s capture", name );
             for( int i=0; i<s_numCpus; i++ )
             {
                 const int fd = perf_event_open( &pe, -1, i, -1, PERF_FLAG_FD_CLOEXEC );
@@ -1052,6 +1061,16 @@ bool SysTraceStart( int64_t& samplingPeriod )
                     }
                 }
             }
+        };
+
+        if( wakeupId != -1 || wakeupNewId != -1 )
+        {
+            setupWakeupCapture( wakeupId, "wakeup" );
+            setupWakeupCapture( wakeupNewId, "new wakeup" );
+        }
+        else
+        {
+            setupWakeupCapture( wakingId, "waking up" );
         }
     }
 
@@ -1267,10 +1286,10 @@ void SysTraceWorker( void* ptr )
             const auto ctxBufNum = numBuffers - ctxBufferIdx;
 
             int activeNum = 0;
-            uint16_t active[512];
-            uint32_t end[512];
-            uint32_t pos[512];
-            int64_t time[512];
+            std::vector<uint16_t> active( ctxBufNum );
+            std::vector<uint32_t> end( ctxBufNum );
+            std::vector<uint32_t> pos( ctxBufNum );
+            std::vector<int64_t> time( ctxBufNum );
 
             auto PrimeNext = [&pos, &end, &time]( int idx, RingBuffer& ring ) {
                 while( pos[idx] < end[idx] )
@@ -1279,7 +1298,7 @@ void SysTraceWorker( void* ptr )
                     ring.Read( &hdr, pos[idx], sizeof( hdr ) );
                     if( hdr.type == PERF_RECORD_SAMPLE )
                     {
-                        ring.Read( time + idx, pos[idx] + sizeof( hdr ), sizeof( int64_t ) );
+                        ring.Read( &time[idx], pos[idx] + sizeof( hdr ), sizeof( int64_t ) );
                         return true;
                     }
                     assert( hdr.size > 0 );
@@ -1418,7 +1437,8 @@ void SysTraceWorker( void* ptr )
                         }
                         else if( rid == EventWaking)
                         {
-                            // See /sys/kernel/debug/tracing/events/sched/sched_waking/format
+                            // See /sys/kernel/debug/tracing/events/sched/sched_wakeup*/format
+                            // and /sys/kernel/debug/tracing/events/sched/sched_waking/format.
                             // Layout:
                             //   u64 time // PERF_SAMPLE_TIME
                             //   u32 size

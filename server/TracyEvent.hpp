@@ -510,8 +510,9 @@ struct CrashEvent
 
 /**
 * Represents a context switch.
-* Start is the when the thread wakes up (if known).
-* End is when the context switch to another thread (or idle) happens.
+* Wakeup is when the thread becomes runnable, if known.
+* Start is when the thread is scheduled on a CPU.
+* End is when the thread switches to another thread (or idle).
 */
 struct ContextSwitchData
 {
@@ -583,6 +584,8 @@ struct ContextSwitchData
     tracy_force_inline void SetState( int8_t state ) { _state = state; }
     tracy_force_inline int64_t WakeupVal() const { return _wakeup.Val(); }
     tracy_force_inline void SetWakeup( int64_t wakeup ) { assert( wakeup < (int64_t)( 1ull << 47 ) ); _wakeup.SetVal( wakeup ); }
+    tracy_force_inline bool IsWakeupValid() const { return ( _flags & 0x01 ) != 0; }
+    tracy_force_inline void SetWakeupValid( bool valid ) { _flags = valid ? ( _flags | 0x01 ) : ( _flags & uint8_t( ~0x01 ) ); }
     tracy_force_inline uint16_t Thread() const { return _thread; }
     tracy_force_inline void SetThread( uint16_t thread ) { _thread = thread; }
 
@@ -596,6 +599,7 @@ struct ContextSwitchData
     
     Int48 _wakeup;
     uint16_t _thread; // currently unused ? Could store next thread or prios here.
+    uint8_t _flags;
 };
 
 

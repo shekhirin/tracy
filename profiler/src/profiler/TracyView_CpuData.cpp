@@ -340,21 +340,30 @@ bool View::DrawCpuData( const TimelineContext& ctx, const std::vector<CpuUsageDr
                                     
                                 ImGui::Separator();
 
-                                TextFocused( "Wait reason:", DecodeContextSwitchReasonCode( prev.Reason() ) );
+                                const bool wakeupValid = it->IsWakeupValid();
+                                TextFocused( wakeupValid ? "Wait reason:" : "Switch-out reason:", DecodeContextSwitchReasonCode( prev.Reason() ) );
                                 ImGui::SameLine();
                                 ImGui::PushFont( g_fonts.normal, FontSmall );
                                 ImGui::AlignTextToFramePadding();
                                 TextDisabledUnformatted( DecodeContextSwitchReason( prev.Reason() ) );
                                 ImGui::PopFont();
-                                TextFocused( "Wait state:", DecodeContextSwitchStateCode( prev.State() ) );
-                                TextFocused( "Waiting time:", TimeToString( it->WakeupVal() - prev.End() ) );
+                                TextFocused( wakeupValid ? "Wait state:" : "Switch-out state:", DecodeContextSwitchStateCode( prev.State() ) );
+                                if( wakeupValid )
+                                {
+                                    TextFocused( "Blocked time:", TimeToString( it->WakeupVal() - prev.End() ) );
+                                }
+                                else
+                                {
+                                    TextFocused( "Off-CPU time:", TimeToString( it->Start() - prev.End() ) );
+                                    TextDisabledUnformatted( "Wakeup event missing; blocked/run-queue split unknown." );
+                                }
                             }
                             
                             // Do we have information about the readying thread?
-                            if( it->Start() - it->WakeupVal() )
+                            if( it->IsWakeupValid() && it->Start() - it->WakeupVal() )
                             {
                                 ImGui::Separator();
-                                TextFocused( "WakeUp delay:", TimeToString( it->Start() - it->WakeupVal() ) );
+                                TextFocused( "Run queue delay:", TimeToString( it->Start() - it->WakeupVal() ) );
                                 assert( it->WakeupCpu() < cpuCnt );
                                 const auto& wakeUpCpuCSwitches = cpuData[it->WakeupCpu()].cs;
                                 auto wakeupit = std::lower_bound( wakeUpCpuCSwitches.begin(), wakeUpCpuCSwitches.end(), it->WakeupVal(), []( const auto& l, const auto& r ) { return l.End() < r; } );
@@ -508,8 +517,8 @@ void View::DrawThreadMigrations( const TimelineContext& ctx, const int origOffse
             return dpos + ImVec2( px, origOffset + sty * 0.5f + cpu * sstep );
         };
 
-        auto drawWakeUp = [&]( int64_t start, ImVec2 startPos, int64_t wakeup, uint8_t wakeupcpu, uint32_t wakecolor, bool forceDraw ) {
-            if( start != wakeup )
+        auto drawWakeUp = [&]( int64_t start, ImVec2 startPos, int64_t wakeup, uint8_t wakeupcpu, uint32_t wakecolor, bool forceDraw, bool wakeupValid ) {
+            if( wakeupValid && start != wakeup )
             {
                 const auto pw = computeScreenPos( wakeup, wakeupcpu );
                 const auto wakeupWidthPixels = startPos.x - pw.x;
@@ -532,7 +541,7 @@ void View::DrawThreadMigrations( const TimelineContext& ctx, const int origOffse
 
         if( it != v.end() && it->Start() > m_vd.zvStart )
         {
-            drawWakeUp( it->Start(), computeScreenPos( it->Start(), it->Cpu() ), it->WakeupVal(), it->WakeupCpu(), 0xFF444444, true);
+            drawWakeUp( it->Start(), computeScreenPos( it->Start(), it->Cpu() ), it->WakeupVal(), it->WakeupCpu(), 0xFF444444, true, it->IsWakeupValid() );
         }
         while( it < end )
         {
@@ -563,7 +572,7 @@ void View::DrawThreadMigrations( const TimelineContext& ctx, const int origOffse
 
             const auto hue = 0.38f * float(waitReason); // Golden angle, gives new colors for each reason
             const auto wakecolor = ImColor::HSV(hue, 1.f, 1.f);
-            drawWakeUp( t1, p1, it->WakeupVal(), it->WakeupCpu(), wakecolor, (migrationWidthPixels >= 30) );
+            drawWakeUp( t1, p1, it->WakeupVal(), it->WakeupCpu(), wakecolor, (migrationWidthPixels >= 30), it->IsWakeupValid() );
         }
     }
 }
